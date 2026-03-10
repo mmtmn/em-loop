@@ -365,6 +365,7 @@ in vec2 vUv;
 
 uniform sampler2D uSceneTexture;
 uniform sampler2D uBloomTexture;
+uniform int uFilterMode;
 
 vec3 acesApprox(vec3 color) {
     const float a = 2.51;
@@ -377,14 +378,36 @@ vec3 acesApprox(vec3 color) {
 
 void main() {
     vec3 scene = texture(uSceneTexture, vUv).rgb;
-    vec3 bloom = texture(uBloomTexture, vUv).rgb;
+    vec3 bloom = vec3(0.0);
+    if (uFilterMode != 4) {
+        bloom = texture(uBloomTexture, vUv).rgb;
+    }
     vec3 hdr = scene + bloom * 0.85;
-    vec3 mapped = acesApprox(hdr * 1.10);
-    mapped = pow(mapped, vec3(1.0 / 2.2));
-
     vec2 centered = vUv * 2.0 - 1.0;
-    float vignette = mix(1.0, smoothstep(1.75, 0.10, dot(centered, centered)), 0.25);
-    mapped *= vignette;
+    float radial = dot(centered, centered);
+    vec3 mapped;
+
+    if (uFilterMode == 0) {
+        mapped = clamp(hdr * 0.72, 0.0, 1.0);
+    } else if (uFilterMode == 4) {
+        mapped = acesApprox(scene * 1.02);
+        mapped *= mix(1.0, smoothstep(1.85, 0.12, radial), 0.10);
+    } else if (uFilterMode == 2) {
+        mapped = acesApprox(hdr * 1.04);
+        mapped *= vec3(0.90, 1.01, 1.13);
+        mapped = mix(mapped, vec3(dot(mapped, vec3(0.22, 0.61, 0.17))), 0.06);
+        mapped *= mix(1.0, smoothstep(1.85, 0.08, radial), 0.18);
+    } else if (uFilterMode == 3) {
+        mapped = acesApprox(hdr * 1.16);
+        mapped = pow(mapped, vec3(0.94, 0.96, 1.00));
+        mapped *= vec3(1.10, 1.02, 0.92);
+        mapped *= mix(1.0, smoothstep(1.68, 0.08, radial), 0.20);
+    } else {
+        mapped = acesApprox(hdr * 1.10);
+        mapped *= mix(1.0, smoothstep(1.75, 0.10, radial), 0.25);
+    }
+
+    mapped = pow(clamp(mapped, 0.0, 1.0), vec3(1.0 / 2.2));
 
     fragColor = vec4(mapped, 1.0);
 }

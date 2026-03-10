@@ -443,6 +443,12 @@ bool Simulation::initialize(std::size_t linesPerFamily, std::size_t pointsPerLin
     return true;
 }
 
+void Simulation::setFieldConfig(FieldMode fieldMode, int torusP, int torusQ) {
+    fieldMode_ = fieldMode;
+    torusP_ = torusP;
+    torusQ_ = torusQ;
+}
+
 void Simulation::update(float, float timeSeconds) {
     if (interopResource_ == nullptr || particleCount_ == 0) {
         return;

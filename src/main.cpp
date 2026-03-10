@@ -43,6 +43,14 @@ struct NamedFieldPreset {
     int torusQ;
 };
 
+enum class FilterMode {
+    Off = 0,
+    Filmic = 1,
+    Aurora = 2,
+    Solar = 3,
+    NoGlow = 4,
+};
+
 constexpr QualityPreset kQualityLow{
     "low",
     1280,
@@ -127,13 +135,24 @@ struct InputState {
     bool firstMouseSample = true;
     bool tabHeld = false;
     bool resetHeld = false;
+    bool filterHeld = false;
+    bool preset1Held = false;
+    bool preset2Held = false;
+    bool preset3Held = false;
     double lastMouseX = 0.0;
     double lastMouseY = 0.0;
+};
+
+struct RuntimeState {
+    RunConfig config;
+    FilterMode filterMode = FilterMode::Filmic;
+    float simulationStartTime = 0.0f;
 };
 
 struct AppState {
     Camera camera;
     InputState input;
+    RuntimeState runtime;
     int framebufferWidth = 1280;
     int framebufferHeight = 720;
     bool framebufferResized = false;
@@ -695,27 +714,27 @@ std::string injectDefinesAfterVersion(const char* source, const std::string& def
     return defines + shader;
 }
 
-bool applyNamedFieldPreset(std::string_view name, RunConfig& config) {
-    const auto apply = [&](const NamedFieldPreset& preset) {
-        config.fieldMode = preset.fieldMode;
-        config.torusP = preset.torusP;
-        config.torusQ = preset.torusQ;
-    };
+void applyFieldPreset(const NamedFieldPreset& preset, RunConfig& config) {
+    config.fieldMode = preset.fieldMode;
+    config.torusP = preset.torusP;
+    config.torusQ = preset.torusQ;
+}
 
+bool applyNamedFieldPreset(std::string_view name, RunConfig& config) {
     if (name == kPresetHopfion.cliName) {
-        apply(kPresetHopfion);
+        applyFieldPreset(kPresetHopfion, config);
         return true;
     }
     if (name == kPresetTrefoil.cliName) {
-        apply(kPresetTrefoil);
+        applyFieldPreset(kPresetTrefoil, config);
         return true;
     }
     if (name == kPresetCinquefoil.cliName) {
-        apply(kPresetCinquefoil);
+        applyFieldPreset(kPresetCinquefoil, config);
         return true;
     }
     if (name == kPresetLinkedRings.cliName || name == "rings") {
-        apply(kPresetLinkedRings);
+        applyFieldPreset(kPresetLinkedRings, config);
         return true;
     }
     return false;
@@ -844,13 +863,66 @@ std::string fieldDescriptor(const RunConfig& config) {
     return "TORUS P" + std::to_string(config.torusP) + " Q" + std::to_string(config.torusQ);
 }
 
-std::string buildWindowTitle(const RunConfig& config, const QualityPreset& quality, float fps) {
+const char* filterModeName(FilterMode filterMode) {
+    switch (filterMode) {
+        case FilterMode::Off:
+            return "OFF";
+        case FilterMode::Filmic:
+            return "FILMIC";
+        case FilterMode::Aurora:
+            return "AURORA";
+        case FilterMode::Solar:
+            return "SOLAR";
+        case FilterMode::NoGlow:
+            return "NO GLOW";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+FilterMode nextFilterMode(FilterMode filterMode) {
+    switch (filterMode) {
+        case FilterMode::Filmic:
+            return FilterMode::NoGlow;
+        case FilterMode::NoGlow:
+            return FilterMode::Aurora;
+        case FilterMode::Aurora:
+            return FilterMode::Solar;
+        case FilterMode::Solar:
+            return FilterMode::Off;
+        case FilterMode::Off:
+        default:
+            return FilterMode::Filmic;
+    }
+}
+
+void resetSceneState(AppState& state, float currentTime) {
+    state.camera.reset();
+    state.runtime.simulationStartTime = currentTime;
+}
+
+void applyRuntimePreset(AppState& state, Simulation& simulation, const NamedFieldPreset& preset, float currentTime) {
+    applyFieldPreset(preset, state.runtime.config);
+    simulation.setFieldConfig(state.runtime.config.fieldMode, state.runtime.config.torusP, state.runtime.config.torusQ);
+    resetSceneState(state, currentTime);
+}
+
+bool consumeKeyPress(GLFWwindow* window, int key, bool& held) {
+    const bool down = glfwGetKey(window, key) == GLFW_PRESS;
+    const bool pressed = down && !held;
+    held = down;
+    return pressed;
+}
+
+std::string buildWindowTitle(const RunConfig& config, const QualityPreset& quality, FilterMode filterMode, float fps) {
     std::string title = "EM Loop | ";
     title += uppercaseCopy(quality.name);
     title += " | ";
     title += namedFieldLabel(config);
     title += " | ";
     title += fieldDescriptor(config);
+    title += " | ";
+    title += filterModeName(filterMode);
     title += " | ";
     title += std::to_string(static_cast<int>(fps + 0.5f));
     title += " FPS";
@@ -892,7 +964,7 @@ void printControls(const QualityPreset& quality) {
         << "Quality: " << quality.name << '\n';
 }
 
-void buildOverlayHud(OverlayRenderer& overlay, const RunConfig& config, const QualityPreset& quality, float fps) {
+void buildOverlayHud(OverlayRenderer& overlay, const RunConfig& config, const QualityPreset& quality, FilterMode filterMode, float fps) {
     overlay.clear();
 
     const std::array<float, 4> panelColor{0.015f, 0.025f, 0.040f, 0.78f};
@@ -901,15 +973,16 @@ void buildOverlayHud(OverlayRenderer& overlay, const RunConfig& config, const Qu
     const std::array<float, 4> accentColor{0.22f, 0.88f, 0.92f, 0.92f};
     const std::array<float, 4> warmColor{1.00f, 0.72f, 0.26f, 0.92f};
 
-    overlay.addRect(18.0f, 18.0f, 430.0f, 132.0f, panelColor);
+    overlay.addRect(18.0f, 18.0f, 430.0f, 152.0f, panelColor);
     overlay.addRect(18.0f, 18.0f, 430.0f, 20.0f, borderColor);
-    overlay.addRect(18.0f, 130.0f, 430.0f, 132.0f, borderColor);
+    overlay.addRect(18.0f, 150.0f, 430.0f, 152.0f, borderColor);
 
     overlay.addText(32.0f, 32.0f, 3.0f, "EM LOOP", accentColor);
     overlay.addText(32.0f, 54.0f, 2.0f, "QUALITY: " + uppercaseCopy(quality.name), textColor);
     overlay.addText(32.0f, 74.0f, 2.0f, "PRESET: " + namedFieldLabel(config), warmColor);
     overlay.addText(32.0f, 94.0f, 2.0f, "FIELD: " + fieldDescriptor(config), textColor);
-    overlay.addText(32.0f, 114.0f, 2.0f, "FPS: " + std::to_string(static_cast<int>(fps + 0.5f)), accentColor);
+    overlay.addText(32.0f, 114.0f, 2.0f, "FILTER: " + std::string(filterModeName(filterMode)), textColor);
+    overlay.addText(32.0f, 134.0f, 2.0f, "FPS: " + std::to_string(static_cast<int>(fps + 0.5f)), accentColor);
 }
 
 }  // namespace
@@ -917,7 +990,7 @@ void buildOverlayHud(OverlayRenderer& overlay, const RunConfig& config, const Qu
 void setMouseCapture(GLFWwindow* window, AppState& state, bool captured);
 void framebufferSizeCallback(GLFWwindow* window, int width, int height);
 void cursorPositionCallback(GLFWwindow* window, double xpos, double ypos);
-void processInput(GLFWwindow* window, AppState& state, float dt);
+void processInput(GLFWwindow* window, AppState& state, Simulation& simulation, float currentTime, float dt);
 void setCameraBasisUniforms(GLuint program, const Camera& camera, float aspect, float timeSeconds);
 GLuint createParticleVao(GLuint vertexBuffer);
 GLuint createFullscreenVao();
@@ -938,7 +1011,7 @@ int main(int argc, char** argv) {
     Simulation simulation;
 
     try {
-        const RunConfig runConfig = parseRunConfig(argc, argv);
+        RunConfig runConfig = parseRunConfig(argc, argv);
         const QualityPreset& quality = qualityPreset(runConfig);
 
         if (glfwInit() != GLFW_TRUE) {
@@ -955,6 +1028,7 @@ int main(int argc, char** argv) {
         }
         
         AppState state;
+        state.runtime.config = runConfig;
         state.framebufferWidth = quality.windowWidth;
         state.framebufferHeight = quality.windowHeight;
         glfwMakeContextCurrent(window);
@@ -989,7 +1063,13 @@ int main(int argc, char** argv) {
         
         fullscreenVao = createFullscreenVao();
         
-        if (!simulation.initialize(quality.linesPerFamily, quality.pointsPerLine, runConfig.fieldMode, runConfig.torusP, runConfig.torusQ)) {
+        if (!simulation.initialize(
+                quality.linesPerFamily,
+                quality.pointsPerLine,
+                state.runtime.config.fieldMode,
+                state.runtime.config.torusP,
+                state.runtime.config.torusQ
+            )) {
             throw std::runtime_error("Failed to initialize CUDA particle simulation");
         }
         
@@ -1005,7 +1085,7 @@ int main(int argc, char** argv) {
         );
         
         printControls(quality);
-        printConfiguration(runConfig);
+        printConfiguration(state.runtime.config);
         std::cout
             << "Controls:\n"
             << "  WASD  move horizontally\n"
@@ -1013,12 +1093,15 @@ int main(int argc, char** argv) {
             << "  Mouse look\n"
             << "  Shift speed up\n"
             << "  Tab   toggle mouse capture\n"
-            << "  R     reset camera\n"
+            << "  R     reset scene\n"
+            << "  1 2 3 switch presets\n"
+            << "  F     cycle filters\n"
             << "  Esc   quit\n";
         
         float lastTime = static_cast<float>(glfwGetTime());
+        state.runtime.simulationStartTime = lastTime;
         float fpsSmoothed = 60.0f;
-        float titleTimer = 0.0f;
+        glfwSetWindowTitle(window, buildWindowTitle(state.runtime.config, quality, state.runtime.filterMode, fpsSmoothed).c_str());
 
         while (glfwWindowShouldClose(window) == GLFW_FALSE) {
             const float currentTime = static_cast<float>(glfwGetTime());
@@ -1026,15 +1109,11 @@ int main(int argc, char** argv) {
             lastTime = currentTime;
             dt = std::clamp(dt, 0.0005f, 0.033f);
             fpsSmoothed = fpsSmoothed * 0.92f + (1.0f / dt) * 0.08f;
-            titleTimer += dt;
 
             glfwPollEvents();
-            processInput(window, state, dt);
+            processInput(window, state, simulation, currentTime, dt);
 
-            if (titleTimer >= 0.25f) {
-                glfwSetWindowTitle(window, buildWindowTitle(runConfig, quality, fpsSmoothed).c_str());
-                titleTimer = 0.0f;
-            }
+            glfwSetWindowTitle(window, buildWindowTitle(state.runtime.config, quality, state.runtime.filterMode, fpsSmoothed).c_str());
         
             if (state.framebufferResized) {
                 sceneFramebuffer.create(state.framebufferWidth, state.framebufferHeight);
@@ -1049,8 +1128,9 @@ int main(int argc, char** argv) {
             const Mat4 projection = perspective(state.camera.verticalFov, aspect, 0.1f, 60.0f);
             const Mat4 view = lookAt(state.camera.position, state.camera.position + state.camera.forward(), state.camera.up());
             const float pointScale = 0.5f * static_cast<float>(state.framebufferHeight) * projection.m[5];
+            const float simulationTime = std::max(0.0f, currentTime - state.runtime.simulationStartTime);
         
-            simulation.update(dt, currentTime);
+            simulation.update(dt, simulationTime);
         
             glBindFramebuffer(GL_FRAMEBUFFER, sceneFramebuffer.fbo);
             glViewport(0, 0, state.framebufferWidth, state.framebufferHeight);
@@ -1061,7 +1141,7 @@ int main(int argc, char** argv) {
             glBindVertexArray(fullscreenVao);
         
             glUseProgram(backgroundProgram);
-            setCameraBasisUniforms(backgroundProgram, state.camera, aspect, currentTime);
+            setCameraBasisUniforms(backgroundProgram, state.camera, aspect, simulationTime);
             glDrawArrays(GL_TRIANGLES, 0, 3);
         
             glEnable(GL_BLEND);
@@ -1069,8 +1149,8 @@ int main(int argc, char** argv) {
             glBlendFunc(GL_ONE, GL_ONE);
         
             glUseProgram(volumeProgram);
-            setCameraBasisUniforms(volumeProgram, state.camera, aspect, currentTime);
-            setFieldUniforms(volumeProgram, runConfig.fieldMode, runConfig.torusP, runConfig.torusQ);
+            setCameraBasisUniforms(volumeProgram, state.camera, aspect, simulationTime);
+            setFieldUniforms(volumeProgram, state.runtime.config.fieldMode, state.runtime.config.torusP, state.runtime.config.torusQ);
             glDrawArrays(GL_TRIANGLES, 0, 3);
         
             glUseProgram(particleProgram);
@@ -1088,32 +1168,35 @@ int main(int argc, char** argv) {
         
             glUseProgram(blurProgram);
             glBindVertexArray(fullscreenVao);
-        
-            bool horizontal = true;
-            bool firstIteration = true;
-            for (int i = 0; i < quality.blurPasses; ++i) {
-                const int target = horizontal ? 0 : 1;
-                const GLuint sourceTexture = firstIteration ? sceneFramebuffer.brightTexture : pingPongBuffers.textures[1 - target];
-        
-                glBindFramebuffer(GL_FRAMEBUFFER, pingPongBuffers.fbos[target]);
-                glViewport(
-                    0,
-                    0,
-                    std::max(1, state.framebufferWidth / quality.bloomDivisor),
-                    std::max(1, state.framebufferHeight / quality.bloomDivisor)
-                );
-                glClear(GL_COLOR_BUFFER_BIT);
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, sourceTexture);
-                glUniform1i(glGetUniformLocation(blurProgram, "uInputTexture"), 0);
-                glUniform2f(glGetUniformLocation(blurProgram, "uDirection"), horizontal ? 1.0f : 0.0f, horizontal ? 0.0f : 1.0f);
-                glDrawArrays(GL_TRIANGLES, 0, 3);
-        
-                horizontal = !horizontal;
-                firstIteration = false;
+
+            GLuint bloomTexture = sceneFramebuffer.brightTexture;
+            if (state.runtime.filterMode != FilterMode::NoGlow) {
+                bool horizontal = true;
+                bool firstIteration = true;
+                for (int i = 0; i < quality.blurPasses; ++i) {
+                    const int target = horizontal ? 0 : 1;
+                    const GLuint sourceTexture = firstIteration ? sceneFramebuffer.brightTexture : pingPongBuffers.textures[1 - target];
+
+                    glBindFramebuffer(GL_FRAMEBUFFER, pingPongBuffers.fbos[target]);
+                    glViewport(
+                        0,
+                        0,
+                        std::max(1, state.framebufferWidth / quality.bloomDivisor),
+                        std::max(1, state.framebufferHeight / quality.bloomDivisor)
+                    );
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_2D, sourceTexture);
+                    glUniform1i(glGetUniformLocation(blurProgram, "uInputTexture"), 0);
+                    glUniform2f(glGetUniformLocation(blurProgram, "uDirection"), horizontal ? 1.0f : 0.0f, horizontal ? 0.0f : 1.0f);
+                    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+                    horizontal = !horizontal;
+                    firstIteration = false;
+                }
+
+                bloomTexture = pingPongBuffers.textures[horizontal ? 1 : 0];
             }
-        
-            const GLuint bloomTexture = pingPongBuffers.textures[horizontal ? 1 : 0];
         
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
             glViewport(0, 0, state.framebufferWidth, state.framebufferHeight);
@@ -1126,10 +1209,11 @@ int main(int argc, char** argv) {
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, bloomTexture);
             glUniform1i(glGetUniformLocation(compositeProgram, "uBloomTexture"), 1);
+            glUniform1i(glGetUniformLocation(compositeProgram, "uFilterMode"), static_cast<int>(state.runtime.filterMode));
             glBindVertexArray(fullscreenVao);
             glDrawArrays(GL_TRIANGLES, 0, 3);
 
-            buildOverlayHud(overlayRenderer, runConfig, quality, fpsSmoothed);
+            buildOverlayHud(overlayRenderer, state.runtime.config, quality, state.runtime.filterMode, fpsSmoothed);
             overlayRenderer.render(state.framebufferWidth, state.framebufferHeight);
 
             glfwSwapBuffers(window);
@@ -1241,22 +1325,31 @@ void cursorPositionCallback(GLFWwindow* window, double xpos, double ypos) {
     state->camera.pitch = std::clamp(state->camera.pitch, -1.45f, 1.45f);
 }
 
-void processInput(GLFWwindow* window, AppState& state, float dt) {
+void processInput(GLFWwindow* window, AppState& state, Simulation& simulation, float currentTime, float dt) {
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
         glfwSetWindowShouldClose(window, GLFW_TRUE);
     }
 
-    const bool tabDown = glfwGetKey(window, GLFW_KEY_TAB) == GLFW_PRESS;
-    if (tabDown && !state.input.tabHeld) {
+    if (consumeKeyPress(window, GLFW_KEY_TAB, state.input.tabHeld)) {
         setMouseCapture(window, state, !state.input.mouseCaptured);
     }
-    state.input.tabHeld = tabDown;
 
-    const bool resetDown = glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS;
-    if (resetDown && !state.input.resetHeld) {
-        state.camera.reset();
+    if (consumeKeyPress(window, GLFW_KEY_R, state.input.resetHeld)) {
+        resetSceneState(state, currentTime);
     }
-    state.input.resetHeld = resetDown;
+
+    if (consumeKeyPress(window, GLFW_KEY_1, state.input.preset1Held)) {
+        applyRuntimePreset(state, simulation, kPresetHopfion, currentTime);
+    }
+    if (consumeKeyPress(window, GLFW_KEY_2, state.input.preset2Held)) {
+        applyRuntimePreset(state, simulation, kPresetTrefoil, currentTime);
+    }
+    if (consumeKeyPress(window, GLFW_KEY_3, state.input.preset3Held)) {
+        applyRuntimePreset(state, simulation, kPresetCinquefoil, currentTime);
+    }
+    if (consumeKeyPress(window, GLFW_KEY_F, state.input.filterHeld)) {
+        state.runtime.filterMode = nextFilterMode(state.runtime.filterMode);
+    }
 
     const Vec3 worldUp{0.0f, 1.0f, 0.0f};
     Vec3 forward = state.camera.forward();

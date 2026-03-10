@@ -29,7 +29,9 @@ Available named presets: `hopfion`, `trefoil`, `cinquefoil`, `linked-rings`
 - Mouse: look around
 - `Shift`: move faster
 - `Tab`: toggle mouse capture
-- `R`: reset camera
+- `R`: reset camera and simulation time
+- `1`, `2`, `3`: switch between `hopfion`, `trefoil`, and `cinquefoil`
+- `F`: cycle post-process filters, including `OFF` and `NO GLOW`
 - `Escape`: quit
 
 ## Notes

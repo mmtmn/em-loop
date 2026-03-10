@@ -18,6 +18,7 @@ public:
     Simulation& operator=(const Simulation&) = delete;
 
     bool initialize(std::size_t linesPerFamily, std::size_t pointsPerLine, FieldMode fieldMode, int torusP, int torusQ);
+    void setFieldConfig(FieldMode fieldMode, int torusP, int torusQ);
     void update(float dt, float timeSeconds);
     void shutdown();
 
