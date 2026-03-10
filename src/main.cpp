@@ -1127,7 +1127,6 @@ int main(int argc, char** argv) {
             const float aspect = static_cast<float>(state.framebufferWidth) / static_cast<float>(state.framebufferHeight);
             const Mat4 projection = perspective(state.camera.verticalFov, aspect, 0.1f, 60.0f);
             const Mat4 view = lookAt(state.camera.position, state.camera.position + state.camera.forward(), state.camera.up());
-            const float pointScale = 0.5f * static_cast<float>(state.framebufferHeight) * projection.m[5];
             const float simulationTime = std::max(0.0f, currentTime - state.runtime.simulationStartTime);
         
             simulation.update(dt, simulationTime);
@@ -1156,12 +1155,25 @@ int main(int argc, char** argv) {
             glUseProgram(particleProgram);
             glUniformMatrix4fv(glGetUniformLocation(particleProgram, "uView"), 1, GL_FALSE, view.data());
             glUniformMatrix4fv(glGetUniformLocation(particleProgram, "uProjection"), 1, GL_FALSE, projection.data());
-            glUniform1f(glGetUniformLocation(particleProgram, "uPointScale"), pointScale);
-            glUniform1f(glGetUniformLocation(particleProgram, "uMaxPointSize"), 28.0f);
-            glUniform1f(glGetUniformLocation(particleProgram, "uNearFadeStart"), 0.55f);
-            glUniform1f(glGetUniformLocation(particleProgram, "uNearFadeEnd"), 1.10f);
             glBindVertexArray(particleVao);
-            glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(simulation.particleCount()));
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(GL_TRUE);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glLineWidth(1.2f);
+
+            const GLsizei pointsPerLine = static_cast<GLsizei>(quality.pointsPerLine);
+            const GLsizei linesPerFamily = static_cast<GLsizei>(quality.linesPerFamily);
+            const GLsizei familyStride = pointsPerLine * linesPerFamily;
+            const GLenum linePrimitive = state.runtime.config.fieldMode == FieldMode::Hopfion ? GL_LINE_LOOP : GL_LINE_STRIP;
+
+            for (GLsizei family = 0; family < 2; ++family) {
+                const GLsizei familyBase = family * familyStride;
+                for (GLsizei line = 0; line < linesPerFamily; ++line) {
+                    glDrawArrays(linePrimitive, familyBase + line * pointsPerLine, pointsPerLine);
+                }
+            }
+
+            glDisable(GL_DEPTH_TEST);
             glBindVertexArray(0);
         
             glDisable(GL_BLEND);

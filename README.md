@@ -39,7 +39,7 @@ Available named presets: `hopfion`, `trefoil`, `cinquefoil`, `linked-rings`
 - The field evaluator is based on the exact Hopfion formula from Kedia et al., "Tying knots in light fields" (2013), using the Riemann-Silberstein vector `F = E + iB`.
 - `--field torus --p P --q Q` switches to the exact Bateman torus-knot family `F = ∇α^P × ∇β^Q` from the same paper. Coprime `(P, Q)` values give torus knots; non-coprime pairs give linked rings.
 - `--preset` is a convenience layer on top of the exact fields: `trefoil` = `(2,3)`, `cinquefoil` = `(2,5)`, and `linked-rings` = `(2,2)`.
-- CUDA traces samples along the instantaneous electric and magnetic field lines each frame; the renderer visualizes those exact field directions, not a handcrafted flow.
+- Hopfion mode emphasizes the closed linked-loop Hopf-fibration picture directly, while torus mode still traces sampled electric and magnetic field lines from the exact field directions.
 - The top-left HUD and window title show the current quality, preset, field family, and FPS without requiring any extra text-rendering dependency.
 - This is still a visualization layer, not a numerical Maxwell solver: colors, halo density mapping, time scaling, and streamline seeding are chosen for legibility and performance.
 - `medium` is now the default preset and is tuned to be much lighter than the original first pass. Use `high` or `ultra` only if your frame time has headroom.

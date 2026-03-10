@@ -8,10 +8,10 @@
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
-constexpr float kGoldenAngle = 2.39996322972865332f;
 constexpr float kSpatialScale = 1.75f;
 constexpr float kTimeScale = 0.42f;
 constexpr float kTraceStep = 0.075f;
+constexpr float kHopfDisplaySpin = 0.16f;
 
 struct ParticleVertex {
     float4 positionSize;
@@ -34,6 +34,12 @@ struct FieldSample {
     float3 magnetic;
     float3 poynting;
     float energy;
+};
+
+struct SeedAngles {
+    float eta;
+    float phaseA;
+    float phaseB;
 };
 
 __host__ __device__ float3 add3(const float3& a, const float3& b) {
@@ -283,27 +289,52 @@ __device__ FieldSample sampleField(float3 position, float timeSeconds, int field
         : sampleHopfionField(position, timeSeconds);
 }
 
-__device__ float3 hopfSeed(int lineIndex, int linesPerFamily, int family, int p, int q) {
-    const float u = (static_cast<float>(lineIndex) + 0.5f) / static_cast<float>(linesPerFamily);
+__device__ SeedAngles structuredSeedAngles(int lineIndex, int linesPerFamily, int family, int p, int q) {
+    const int shellCountBase = linesPerFamily < 18 ? linesPerFamily : 18;
+    const int shellCount = shellCountBase > 0 ? shellCountBase : 1;
+    const int phaseCount = (linesPerFamily + shellCount - 1) / shellCount;
+    const int shellIndex = lineIndex % shellCount;
+    const int phaseIndex = lineIndex / shellCount;
+    const float shellU = (static_cast<float>(shellIndex) + 0.5f) / static_cast<float>(shellCount);
     const float pWeight = static_cast<float>(p) / static_cast<float>(p + q);
     const float qWeight = static_cast<float>(q) / static_cast<float>(p + q);
     const float etaCenter = atanf(sqrtf(fmaxf(pWeight, 1.0e-4f) / fmaxf(qWeight, 1.0e-4f)));
-    const bool emphasizeCore = (lineIndex % 6) == 0;
-    const float etaSpread = (0.34f + 0.06f * (family == 1 ? 1.0f : 0.0f)) * (emphasizeCore ? 0.20f : 1.0f);
-    const float eta = fminf(fmaxf(etaCenter + (u - 0.5f) * etaSpread, 0.08f), 0.92f * kPi * 0.5f);
-    const float phaseA = kGoldenAngle * static_cast<float>(lineIndex) + (family == 1 ? 0.45f * kPi : 0.0f);
+    const float eta = fminf(fmaxf(etaCenter + (shellU - 0.5f) * 0.88f, 0.10f), 0.90f * kPi * 0.5f);
+    const float shellPhase = phaseCount > 1
+        ? (static_cast<float>(phaseIndex) + 0.35f * shellU) / static_cast<float>(phaseCount)
+        : 0.5f * shellU;
+    const float phaseA = 2.0f * kPi * shellPhase + (family == 1 ? 0.50f * kPi : 0.0f);
     const float phaseB = (-static_cast<float>(p) / static_cast<float>(q)) * phaseA +
         (family == 1 ? -0.25f * kPi / static_cast<float>(q) : 0.20f * kPi / static_cast<float>(q));
 
-    const Complex u0 = makeComplex(cosf(eta) * cosf(phaseA), cosf(eta) * sinf(phaseA));
-    const Complex v0 = makeComplex(sinf(eta) * cosf(phaseB), sinf(eta) * sinf(phaseB));
+    return {eta, phaseA, phaseB};
+}
 
-    const float denom = fmaxf(1.0f - u0.re, 0.08f);
-    const float x = v0.re / denom;
-    const float y = -v0.im / denom;
-    const float z = u0.im / denom;
-
+__device__ float3 stereographicPoint(const Complex& u, const Complex& v) {
+    const float denom = fmaxf(1.0f - u.re, 0.08f);
+    const float x = v.re / denom;
+    const float y = -v.im / denom;
+    const float z = u.im / denom;
     return mul3(make_float3(x, y, z), 0.95f * kSpatialScale);
+}
+
+__device__ float3 hopfSeed(int lineIndex, int linesPerFamily, int family, int p, int q) {
+    const SeedAngles seed = structuredSeedAngles(lineIndex, linesPerFamily, family, p, q);
+    const Complex u0 = makeComplex(cosf(seed.eta) * cosf(seed.phaseA), cosf(seed.eta) * sinf(seed.phaseA));
+    const Complex v0 = makeComplex(sinf(seed.eta) * cosf(seed.phaseB), sinf(seed.eta) * sinf(seed.phaseB));
+    return stereographicPoint(u0, v0);
+}
+
+__device__ float3 hopfFiberPoint(int lineIndex, int sampleIndex, int linesPerFamily, int pointsPerLine, int family, float timeSeconds) {
+    const SeedAngles seed = structuredSeedAngles(lineIndex, linesPerFamily, family, 1, 1);
+    const Complex u0 = makeComplex(cosf(seed.eta) * cosf(seed.phaseA), cosf(seed.eta) * sinf(seed.phaseA));
+    const Complex v0 = makeComplex(sinf(seed.eta) * cosf(seed.phaseB), sinf(seed.eta) * sinf(seed.phaseB));
+
+    const float loopPhase = 2.0f * kPi * (static_cast<float>(sampleIndex) / static_cast<float>(pointsPerLine));
+    const float animatedPhase = loopPhase + (family == 0 ? 1.0f : -1.0f) * timeSeconds * kHopfDisplaySpin;
+    const Complex phase = makeComplex(cosf(animatedPhase), sinf(animatedPhase));
+
+    return stereographicPoint(mulComplex(u0, phase), mulComplex(v0, phase));
 }
 
 __device__ float3 streamlineDirection(const FieldSample& field, int family) {
@@ -325,6 +356,10 @@ __device__ float3 rk4StreamlineStep(float3 position, float ds, float timeSeconds
 }
 
 __device__ float3 traceSamplePoint(int lineIndex, int sampleIndex, int linesPerFamily, int pointsPerLine, int family, float timeSeconds, int fieldMode, int p, int q) {
+    if (fieldMode == static_cast<int>(FieldMode::Hopfion)) {
+        return hopfFiberPoint(lineIndex, sampleIndex, linesPerFamily, pointsPerLine, family, timeSeconds);
+    }
+
     const int seedP = fieldMode == static_cast<int>(FieldMode::Torus) ? p : 1;
     const int seedQ = fieldMode == static_cast<int>(FieldMode::Torus) ? q : 1;
     float3 position = hopfSeed(lineIndex, linesPerFamily, family, seedP, seedQ);
@@ -353,9 +388,11 @@ __device__ void writeVertex(ParticleVertex& vertex, float3 position, int lineInd
 
     const float normalizedLine = (static_cast<float>(lineIndex) + 0.5f) / static_cast<float>(linesPerFamily);
     const float normalizedSample = (static_cast<float>(sampleIndex) + 0.5f) / static_cast<float>(pointsPerLine);
-    const float pulse = 0.5f + 0.5f * sinf(timeSeconds * 0.9f + normalizedLine * 9.0f + normalizedSample * 5.0f);
     const float edgeFade = sinf(normalizedSample * kPi);
     const float energyBoost = smoothstep(0.002f, 0.060f, energy);
+    const int emphasisStrideBase = fieldMode == static_cast<int>(FieldMode::Hopfion) ? (linesPerFamily / 10) : (linesPerFamily / 8);
+    const int emphasisStride = emphasisStrideBase > 0 ? emphasisStrideBase : 1;
+    const bool referenceLine = (lineIndex % emphasisStride) == 0;
 
     float3 baseColor = make_float3(0.10f, 0.72f, 1.10f);
     if (family == 1) {
@@ -364,14 +401,15 @@ __device__ void writeVertex(ParticleVertex& vertex, float3 position, int lineInd
 
     const float3 poyntingTint = mix3(make_float3(0.95f, 0.96f, 1.00f), make_float3(0.65f, 0.88f, 1.00f), 0.5f + 0.5f * field.poynting.y);
     const float3 color = mul3(
-        mix3(baseColor, poyntingTint, 0.18f + 0.12f * pulse),
-        (0.35f + 1.65f * energyBoost) * (0.45f + 0.55f * edgeFade)
+        mix3(baseColor, poyntingTint, 0.14f + 0.08f * normalizedLine),
+        (referenceLine ? 0.72f : 0.22f) + (referenceLine ? 0.90f : 0.38f) * energyBoost
     );
+    const float alpha = (referenceLine ? 0.90f : 0.18f) * (0.75f + 0.25f * edgeFade);
 
-    const float size = 4.2f + 3.6f * energyBoost + 1.4f * pulse + 0.6f * fabsf(direction.y);
+    const float size = 3.2f + 2.4f * energyBoost + 0.8f * fabsf(direction.y);
 
     vertex.positionSize = make_float4(position.x, position.y, position.z, size);
-    vertex.color = make_float4(color.x, color.y, color.z, 1.0f);
+    vertex.color = make_float4(color.x, color.y, color.z, alpha);
 }
 
 __global__ void generateFieldLineVertices(ParticleVertex* vertices, int linesPerFamily, int pointsPerLine, float timeSeconds, int fieldMode, int p, int q) {

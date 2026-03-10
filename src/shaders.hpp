@@ -289,10 +289,6 @@ layout(location = 1) in vec4 aColor;
 
 uniform mat4 uView;
 uniform mat4 uProjection;
-uniform float uPointScale;
-uniform float uMaxPointSize;
-uniform float uNearFadeStart;
-uniform float uNearFadeEnd;
 
 out vec4 vColor;
 
@@ -301,11 +297,9 @@ void main() {
     gl_Position = uProjection * viewPos;
 
     float viewDepth = -viewPos.z;
-    float fade = smoothstep(uNearFadeStart, uNearFadeEnd, viewDepth);
-    float distanceToCamera = max(viewDepth, uNearFadeStart);
-    float pointSize = max(1.0, aPositionSize.w * uPointScale / distanceToCamera);
-    gl_PointSize = min(pointSize, uMaxPointSize);
-    vColor = vec4(aColor.rgb * fade, fade);
+    float fade = smoothstep(0.35, 1.05, viewDepth);
+    float energyHint = clamp((aPositionSize.w - 2.0) / 4.5, 0.0, 1.0);
+    vColor = vec4(aColor.rgb * (0.72 + 0.28 * energyHint) * fade, aColor.a * fade);
 }
 )glsl";
 
@@ -318,18 +312,11 @@ layout(location = 1) out vec4 brightColor;
 in vec4 vColor;
 
 void main() {
-    vec2 uv = gl_PointCoord * 2.0 - 1.0;
-    float radiusSquared = dot(uv, uv);
-    if (radiusSquared > 1.0) {
-        discard;
-    }
-
-    float falloff = exp(-3.5 * radiusSquared) * (1.0 - radiusSquared);
-    vec3 color = vColor.rgb * (0.55 + 1.65 * falloff);
-    fragColor = vec4(color, 1.0);
+    vec3 color = vColor.rgb * vColor.a;
+    fragColor = vec4(color, vColor.a);
 
     float luma = max(max(color.r, color.g), color.b);
-    brightColor = vec4(color * smoothstep(0.75, 1.45, luma), 1.0);
+    brightColor = vec4(color * smoothstep(0.78, 1.22, luma) * 0.22, 1.0);
 }
 )glsl";
 
